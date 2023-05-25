@@ -165,6 +165,13 @@ for i in range(num_documents):
         for s in range(num_signatures):
             signature_matrix[s, i] = np.min(permute[non_zero_rows, s])
 
-# Calculamos la diferencia de jaccard en la signature matrix
-
-final = distance.squareform(distance.pdist(signature_matrix.T, metric=jaccard_difference))
+unique_columns, counts = np.unique(signature_matrix, axis=1, return_counts=True)
+repeated_columns = unique_columns[:, counts > 1]
+indices_repetidos = []
+if repeated_columns.size > 0:
+    for column in repeated_columns.T:
+        indices = np.where((signature_matrix == column[:, None]).all(axis=0))[0]
+        indices_repetidos.append(indices)
+        print(tuple(indices))
+else:
+    print("No hay indices repetidos")
