@@ -7,6 +7,7 @@ import re
 from sklearn.preprocessing import MultiLabelBinarizer
 from datasketch import MinHash
 import random
+import time
 
 # Funciones
 
@@ -62,16 +63,11 @@ def limpiar_texto(tweet:str):
 def shingles(k, words: np.ndarray):
     shingles = []
     for i in range(0, len(words)):
-        shingles.append(' '.join(words[i:i+k]))
+        if len((' '.join(words[i:i+k])).split()) != k:
+            pass
+        else:
+            shingles.append(' '.join(words[i:i+k]))
     return list(set(shingles))
-
-def jaccard_difference(set1, set2):
-    intersection = np.intersect1d(set1, set2)
-    union = np.union1d(set1, set2)
-    if len(union) == 0:
-        return 0.0  # or any other default value
-    return 1.0 - len(intersection) / len(union)
-
 
 # Abrimos datos y los limpiamos
 
@@ -80,74 +76,79 @@ tweets = pd.read_csv(
     usecols=['id', 'screen_name', 'text'],
     index_col='id',
     dtype={'screen_name': str, 'text': str},
-    nrows=1000
+    nrows=10000
     )
-tweets = tweets.drop_duplicates(subset='text', keep=False)
+
+# data = {
+#     'screen_name': ['r', 'r', 'r'],
+#     'text': [
+#         "The night is dark and the moon is red",
+#         "The moon in the night is red",
+#         "I can see moon is red, the night is dark"
+#     ]
+# }
+# tweets = pd.DataFrame(data)
+
 tweets = tweets.dropna()
 tweets['text'] = tweets.loc[:, 'text'].apply(limpiar_texto)
+tweets = tweets.drop_duplicates(subset='text', keep=False)
 
 
 # Creamos Shingles
 
-k = 2 # Shingles size
+k = 3 # Shingles size
 tweets['shingles'] = tweets['text'].str.split().apply(lambda x: np.array(x)).apply(lambda x: shingles(k, x))
 shings = tweets['shingles'].to_numpy()
 u_shingles = np.unique(np.concatenate(shings)) # Shingles unicos en una unica lista
 
-# Caracteristica no me daba una sparse buena, me decia solamente que en las filas 0 habian datos != 0, pero no para el resto de las filas.
-
-# mlb = MultiLabelBinarizer(sparse_output=True)
-# caracteristica = mlb.fit_transform(shings)
-
-
-# Creamos caracteristica y la pasamos a formato sparse
-
-
-
 # Conseguimos coordenadas de filas y columnas en donde shingle esta en tweet.
+start_time = time.time()
 
 rows = []
 cols = []
 data = []
 
-for i, tweet in enumerate(tweets['text']):
-    for j, shingle in enumerate(u_shingles):
+for i, shingle in enumerate(u_shingles):
+    for j, tweet in enumerate(tweets['text']):
         if shingle in tweet:
             rows.append(i)
             cols.append(j)
             data.append(1)
+sparse_matrix = coo_matrix((data, (rows, cols)), shape=((len(u_shingles), len(tweets['text']))))
 
-sparse_matrix = coo_matrix((data, (rows, cols)), shape=(len(tweets['text']), len(u_shingles))).T
+
+end_time = time.time()
+execution_time = end_time - start_time
+print(execution_time)
+
+### Hasta aqui bien, tuve que arreglar los shingles, y drop duplicates despues
 
 
 # Creamos minhashes
+start_time = time.time()
 
 minhashes = []
-num_hashes = 10
+num_hashes = 2
 num_perm = sparse_matrix.shape[0]
 
-
 for i in range(num_hashes):
-    seed = random.randint(0, 2**32 - 1)
-    minhash = MinHash(num_perm=num_perm, seed=seed)
+    minhash = MinHash(num_perm=num_perm, seed=i)
 
     for shingle in u_shingles:
         minhash.update(shingle.encode('utf-8'))
-    mapped_values = [int(value) % sparse_matrix.shape[0] for value in minhash.hashvalues]
-    minhash.hashvalues = mapped_values
     minhashes.append(minhash)
+
+end_time = time.time()
+execution_time = end_time - start_time
+print(execution_time)
 
 # Creamos permute, que es la matriz con los minhashes y los valores randoms permutados
 
 permute = np.zeros((len(minhashes), len(minhashes[0].hashvalues)))
 
 for i, minhash in enumerate(minhashes):
-    # Get the hash values from the MinHash object
     hash_values = minhash.hashvalues
-
-    # Assign the hash values to the corresponding row in the signature matrix
     permute[i] = hash_values
-
 permute = permute.T
 
 # Ocupando permute y la caracteristica (Sparse matrix), calculamos la signature
@@ -165,6 +166,8 @@ for i in range(num_documents):
         for s in range(num_signatures):
             signature_matrix[s, i] = np.min(permute[non_zero_rows, s])
 
+# Hasta aqui bien caso base, tal vez medio sospechoso que numeros de hash sean tan grandes?
+
 unique_columns, counts = np.unique(signature_matrix, axis=1, return_counts=True)
 repeated_columns = unique_columns[:, counts > 1]
 indices_repetidos = []
@@ -172,6 +175,5 @@ if repeated_columns.size > 0:
     for column in repeated_columns.T:
         indices = np.where((signature_matrix == column[:, None]).all(axis=0))[0]
         indices_repetidos.append(indices)
-        print(tuple(indices))
 else:
     print("No hay indices repetidos")
